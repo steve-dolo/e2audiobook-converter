@@ -1,4 +1,4 @@
-# ebooks
+# e2audiobook-converter
 
 Remove DRM from ebooks I've bought and turn them into audiobooks with a local AI voice.
 
