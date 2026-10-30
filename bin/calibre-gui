@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Launch calibre with this repo's private config so DeDRM key settings land
+# in .calibre-config/ (where bin/strip-drm reads them).
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+export CALIBRE_CONFIG_DIRECTORY="$REPO/.calibre-config"
+exec "${CALIBRE_HOME:-$HOME/.local/opt}/calibre/calibre" --with-library "$REPO/.library" "$@"

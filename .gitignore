@@ -1,0 +1,13 @@
+# Books and keys never get committed
+inbox/*
+!inbox/.gitkeep
+out/*
+!out/.gitkeep
+keys/*
+!keys/.gitkeep
+# calibre state (DeDRM keys live in .calibre-config/plugins/dedrm.json)
+.calibre-config/
+.library/
+tools/
+.tts-work/
+tts/.venv/

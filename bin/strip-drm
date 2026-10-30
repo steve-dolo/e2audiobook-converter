@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Strip DRM from ebooks you own and emit DRM-free EPUBs for TTS readers.
+
+Usage: bin/strip-drm [--keep-format] [FILE ...]   (default: everything in inbox/)
+
+Each book is imported into a throwaway calibre library so the DeDRM and
+KFX Input file-type plugins run on it, then converted to EPUB (unless it
+already is one, or --keep-format is given), verified, and written to out/.
+Processed originals move to inbox/done/; failures stay put.
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import zipfile
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+CALIBRE = Path(os.environ.get("CALIBRE_HOME", Path.home() / ".local/opt")) / "calibre"
+INBOX, OUT, DONE = REPO / "inbox", REPO / "out", REPO / "inbox" / "done"
+BOOK_EXTS = {".epub", ".azw", ".azw3", ".azw4", ".azw8", ".kfx", ".kfx-zip", ".mobi",
+             ".prc", ".pdb", ".pdf", ".kepub", ".acsm"}
+# Font obfuscation lives in encryption.xml too but is not DRM.
+FONT_OBFUSCATION = {"http://www.idpf.org/2008/embedding", "http://ns.adobe.com/pdf/enc#RC"}
+
+ENV = dict(os.environ, CALIBRE_CONFIG_DIRECTORY=str(REPO / ".calibre-config"))
+
+
+class DRMStillPresent(Exception):
+    pass
+
+
+def run(*args):
+    proc = subprocess.run([str(CALIBRE / args[0]), *args[1:]], env=ENV,
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{args[0]} failed:\n{proc.stdout}{proc.stderr}")
+    return proc.stdout + proc.stderr
+
+
+def ext_of(path):
+    name = path.name.lower()
+    return ".kfx-zip" if name.endswith(".kfx-zip") else path.suffix.lower()
+
+
+def epub_drm_problems(path):
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+        if "META-INF/rights.xml" in names:
+            return ["META-INF/rights.xml present (Adobe ADEPT)"]
+        if "META-INF/encryption.xml" in names:
+            algos = set(re.findall(r'Algorithm="([^"]+)"', z.read("META-INF/encryption.xml").decode("utf-8", "replace")))
+            bad = algos - FONT_OBFUSCATION
+            if bad:
+                return [f"encrypted resources ({', '.join(sorted(bad))})"]
+    return []
+
+
+def safe_name(s):
+    return re.sub(r'[\\/:*?"<>|]+', "", s).strip()[:150]
+
+
+def process(src, keep_format):
+    with tempfile.TemporaryDirectory(prefix="strip-drm-") as tmp:
+        lib = Path(tmp) / "lib"
+        log = run("calibredb", "add", "--library-path", str(lib), "--duplicates", str(src))
+        books = json.loads(run("calibredb", "list", "--library-path", str(lib), "--for-machine",
+                               "--fields", "title,authors,formats"))
+        if not books:
+            raise RuntimeError(f"calibre did not import the book:\n{log}")
+        book = books[0]
+        stored = Path(book["formats"][0])
+        base = safe_name(f'{book["authors"]} - {book["title"]}')
+
+        if ext_of(stored) == ".epub" or keep_format:
+            result = Path(tmp) / (base + ext_of(stored))
+            shutil.copy2(stored, result)
+        else:
+            result = Path(tmp) / (base + ".epub")
+            try:
+                run("ebook-convert", str(stored), str(result))
+            except RuntimeError as e:
+                if "DRM" in str(e):
+                    raise DRMStillPresent("conversion refused: book is still DRM-protected") from e
+                raise
+
+        if ext_of(result) == ".epub":
+            problems = epub_drm_problems(result)
+            if problems:
+                raise DRMStillPresent("; ".join(problems))
+
+        OUT.mkdir(exist_ok=True)
+        dest = OUT / result.name
+        shutil.move(result, dest)
+        return dest
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("files", nargs="*", type=Path)
+    ap.add_argument("--keep-format", action="store_true", help="don't convert to EPUB")
+    args = ap.parse_args()
+
+    files = args.files or sorted(p for p in INBOX.iterdir()
+                                 if p.is_file() and ext_of(p) in BOOK_EXTS)
+    if not files:
+        print(f"No books found in {INBOX}")
+        return 0
+
+    failed = 0
+    for src in files:
+        print(f"==> {src.name}")
+        try:
+            dest = process(src.resolve(), args.keep_format)
+        except DRMStillPresent as e:
+            failed += 1
+            print(f"    FAILED: {e}\n    -> DeDRM has no working key for this book; see README 'Keys'.")
+            continue
+        except Exception as e:
+            failed += 1
+            print(f"    FAILED: {e}")
+            continue
+        print(f"    OK -> {dest.relative_to(REPO)}")
+        if src.resolve().parent == INBOX:
+            DONE.mkdir(exist_ok=True)
+            shutil.move(src, DONE / src.name)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# EPUB -> M4B with local Kokoro TTS. See tts/make_audiobook.py --help.
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+exec uv run --quiet --project "$REPO/tts" python "$REPO/tts/make_audiobook.py" "$@"

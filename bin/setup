@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Install calibre (user-local, no sudo) and the DRM/KFX plugins into this
+# repo's private calibre config (.calibre-config/). Safe to re-run.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+CALIBRE_HOME="${CALIBRE_HOME:-$HOME/.local/opt}"
+CALIBRE_BIN="$CALIBRE_HOME/calibre"
+export CALIBRE_CONFIG_DIRECTORY="$REPO/.calibre-config"
+
+# Satsuoni's fork tracks Amazon's current Kindle DRM; noDRM upstream stalled in 2023.
+DEDRM_VERSION="${DEDRM_VERSION:-v10.0.32}"
+DEDRM_URL="https://github.com/Satsuoni/DeDRM_tools/releases/download/$DEDRM_VERSION/DeDRM_tools.zip"
+KFX_INPUT_URL="https://plugins.calibre-ebook.com/291290.zip"
+# DeACSM's last tagged release (2022) predates calibre 9 fixes; prefer the newest master CI build.
+DEACSM_REPO="Leseratte10/acsm-calibre-plugin"
+DEACSM_FALLBACK_URL="https://github.com/$DEACSM_REPO/releases/download/v0.0.16/DeACSM_0.0.16.zip"
+
+if [[ ! -x "$CALIBRE_BIN/calibredb" ]]; then
+  echo "==> Installing calibre to $CALIBRE_BIN"
+  tmp="$(mktemp -d)"
+  curl -fsSL -o "$tmp/linux-installer.sh" https://download.calibre-ebook.com/linux-installer.sh
+  sh "$tmp/linux-installer.sh" install_dir="$CALIBRE_HOME" isolated=y
+  rm -rf "$tmp"
+fi
+"$CALIBRE_BIN/calibre" --version
+
+dl="$REPO/tools/downloads"
+mkdir -p "$dl/dedrm-$DEDRM_VERSION"
+if [[ ! -f "$dl/dedrm-$DEDRM_VERSION/DeDRM_plugin.zip" ]]; then
+  echo "==> Downloading DeDRM $DEDRM_VERSION"
+  curl -fsSL -o "$dl/DeDRM_tools-$DEDRM_VERSION.zip" "$DEDRM_URL"
+  unzip -o -q "$dl/DeDRM_tools-$DEDRM_VERSION.zip" -d "$dl/dedrm-$DEDRM_VERSION"
+fi
+echo "==> Downloading KFX Input (latest)"
+curl -fsSL -o "$dl/kfx_input.zip" "$KFX_INPUT_URL"
+
+echo "==> Downloading DeACSM (ACSM Input)"
+artifact_id="$(gh api "repos/$DEACSM_REPO/actions/artifacts?per_page=50" \
+  --jq '[.artifacts[] | select(.workflow_run.head_branch=="master" and .expired==false)][0].id' 2>/dev/null || true)"
+if [[ -n "$artifact_id" && "$artifact_id" != "null" ]]; then
+  gh api "repos/$DEACSM_REPO/actions/artifacts/$artifact_id/zip" > "$dl/deacsm-ci.zip"
+  unzip -o -q "$dl/deacsm-ci.zip" calibre-plugin.zip -d "$dl" && mv "$dl/calibre-plugin.zip" "$dl/DeACSM.zip"
+else
+  echo "    (no CI build available; using v0.0.16 release)"
+  curl -fsSL -o "$dl/DeACSM.zip" "$DEACSM_FALLBACK_URL"
+fi
+
+for p in "$dl/dedrm-$DEDRM_VERSION/DeDRM_plugin.zip" \
+         "$dl/dedrm-$DEDRM_VERSION/Obok_plugin.zip" \
+         "$dl/kfx_input.zip" \
+         "$dl/DeACSM.zip"; do
+  "$CALIBRE_BIN/calibre-customize" -a "$p" | tail -1
+done
+
+echo "==> Setting up local TTS (Kokoro) environment"
+uv sync --project "$REPO/tts" --python 3.12
+
+mkdir -p "$REPO/inbox" "$REPO/out" "$REPO/keys"
+echo "==> Done. Configure keys with: bin/calibre-gui  (Preferences > Plugins > ACSM Input / DeDRM > Customize)"

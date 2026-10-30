@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Headless version of ACSM Input's "Link to ADE account" + "Export account
+# activation data" (no GUI / X display needed). Runs the installed plugin's own
+# Adobe code under calibre's Python. DeDRM picks the key up automatically.
+#
+#   bin/adobe-activate           link this machine to an Adobe ID (prompts)
+#   bin/adobe-activate --status  show current activation, refresh backups in keys/
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+export CALIBRE_CONFIG_DIRECTORY="$REPO/.calibre-config"
+export EBOOKS_REPO="$REPO"
+exec "${CALIBRE_HOME:-$HOME/.local/opt}/calibre/calibre-debug" -e "$REPO/lib/adobe_activate.py" -- "$@"
